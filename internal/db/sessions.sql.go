@@ -11,6 +11,42 @@ import (
 	"strings"
 )
 
+const addSessionCost = `-- name: AddSessionCost :one
+UPDATE sessions
+SET cost = cost + ?
+WHERE id = ?
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id, root_session_id, total_prompt_tokens, total_completion_tokens, user_set_title, agent_name
+`
+
+type AddSessionCostParams struct {
+	Cost float64 `json:"cost"`
+	ID   string  `json:"id"`
+}
+
+func (q *Queries) AddSessionCost(ctx context.Context, arg AddSessionCostParams) (Session, error) {
+	row := q.queryRow(ctx, q.addSessionCostStmt, addSessionCost, arg.Cost, arg.ID)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.ParentSessionID,
+		&i.Title,
+		&i.MessageCount,
+		&i.PromptTokens,
+		&i.CompletionTokens,
+		&i.Cost,
+		&i.UpdatedAt,
+		&i.CreatedAt,
+		&i.SummaryMessageID,
+		&i.ProjectID,
+		&i.RootSessionID,
+		&i.TotalPromptTokens,
+		&i.TotalCompletionTokens,
+		&i.UserSetTitle,
+		&i.AgentName,
+	)
+	return i, err
+}
+
 const countOldSessionTrees = `-- name: CountOldSessionTrees :one
 SELECT COUNT(*) FROM (
 SELECT CAST(COALESCE(MAX(CASE WHEN s.id = COALESCE(NULLIF(s.root_session_id, ''), s.id) THEN s.id END), MIN(s.id)) AS TEXT) AS session_id,
@@ -500,6 +536,113 @@ func (q *Queries) ListVisibleSessionIDs(ctx context.Context, arg ListVisibleSess
 	return items, nil
 }
 
+const recordSessionCompaction = `-- name: RecordSessionCompaction :one
+UPDATE sessions
+SET
+    summary_message_id = ?1,
+    prompt_tokens = ?2,
+    completion_tokens = ?3,
+    total_prompt_tokens = total_prompt_tokens + ?4,
+    total_completion_tokens = total_completion_tokens + ?5,
+    cost = cost + ?6
+WHERE id = ?7
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id, root_session_id, total_prompt_tokens, total_completion_tokens, user_set_title, agent_name
+`
+
+type RecordSessionCompactionParams struct {
+	SummaryMessageID    sql.NullString `json:"summary_message_id"`
+	PromptTokens        int64          `json:"prompt_tokens"`
+	CompletionTokens    int64          `json:"completion_tokens"`
+	AddPromptTokens     int64          `json:"add_prompt_tokens"`
+	AddCompletionTokens int64          `json:"add_completion_tokens"`
+	AddCost             float64        `json:"add_cost"`
+	ID                  string         `json:"id"`
+}
+
+func (q *Queries) RecordSessionCompaction(ctx context.Context, arg RecordSessionCompactionParams) (Session, error) {
+	row := q.queryRow(ctx, q.recordSessionCompactionStmt, recordSessionCompaction,
+		arg.SummaryMessageID,
+		arg.PromptTokens,
+		arg.CompletionTokens,
+		arg.AddPromptTokens,
+		arg.AddCompletionTokens,
+		arg.AddCost,
+		arg.ID,
+	)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.ParentSessionID,
+		&i.Title,
+		&i.MessageCount,
+		&i.PromptTokens,
+		&i.CompletionTokens,
+		&i.Cost,
+		&i.UpdatedAt,
+		&i.CreatedAt,
+		&i.SummaryMessageID,
+		&i.ProjectID,
+		&i.RootSessionID,
+		&i.TotalPromptTokens,
+		&i.TotalCompletionTokens,
+		&i.UserSetTitle,
+		&i.AgentName,
+	)
+	return i, err
+}
+
+const recordSessionUsage = `-- name: RecordSessionUsage :one
+UPDATE sessions
+SET
+    prompt_tokens = ?1,
+    completion_tokens = ?2,
+    total_prompt_tokens = total_prompt_tokens + ?3,
+    total_completion_tokens = total_completion_tokens + ?4,
+    cost = cost + ?5
+WHERE id = ?6
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id, root_session_id, total_prompt_tokens, total_completion_tokens, user_set_title, agent_name
+`
+
+type RecordSessionUsageParams struct {
+	PromptTokens        int64   `json:"prompt_tokens"`
+	CompletionTokens    int64   `json:"completion_tokens"`
+	AddPromptTokens     int64   `json:"add_prompt_tokens"`
+	AddCompletionTokens int64   `json:"add_completion_tokens"`
+	AddCost             float64 `json:"add_cost"`
+	ID                  string  `json:"id"`
+}
+
+func (q *Queries) RecordSessionUsage(ctx context.Context, arg RecordSessionUsageParams) (Session, error) {
+	row := q.queryRow(ctx, q.recordSessionUsageStmt, recordSessionUsage,
+		arg.PromptTokens,
+		arg.CompletionTokens,
+		arg.AddPromptTokens,
+		arg.AddCompletionTokens,
+		arg.AddCost,
+		arg.ID,
+	)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.ParentSessionID,
+		&i.Title,
+		&i.MessageCount,
+		&i.PromptTokens,
+		&i.CompletionTokens,
+		&i.Cost,
+		&i.UpdatedAt,
+		&i.CreatedAt,
+		&i.SummaryMessageID,
+		&i.ProjectID,
+		&i.RootSessionID,
+		&i.TotalPromptTokens,
+		&i.TotalCompletionTokens,
+		&i.UserSetTitle,
+		&i.AgentName,
+	)
+	return i, err
+}
+
 const renameSession = `-- name: RenameSession :one
 UPDATE sessions
 SET
@@ -601,8 +744,7 @@ SET
     completion_tokens = ?,
     total_prompt_tokens = ?,
     total_completion_tokens = ?,
-    summary_message_id = ?,
-    cost = ?
+    summary_message_id = ?
 WHERE id = ?
 RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id, root_session_id, total_prompt_tokens, total_completion_tokens, user_set_title, agent_name
 `
@@ -614,7 +756,6 @@ type UpdateSessionParams struct {
 	TotalPromptTokens     int64          `json:"total_prompt_tokens"`
 	TotalCompletionTokens int64          `json:"total_completion_tokens"`
 	SummaryMessageID      sql.NullString `json:"summary_message_id"`
-	Cost                  float64        `json:"cost"`
 	ID                    string         `json:"id"`
 }
 
@@ -626,7 +767,6 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 		arg.TotalPromptTokens,
 		arg.TotalCompletionTokens,
 		arg.SummaryMessageID,
-		arg.Cost,
 		arg.ID,
 	)
 	var i Session

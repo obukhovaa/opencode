@@ -27,6 +27,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.addBridgeAllowlistEntryStmt, err = db.PrepareContext(ctx, addBridgeAllowlistEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query AddBridgeAllowlistEntry: %w", err)
 	}
+	if q.addSessionCostStmt, err = db.PrepareContext(ctx, addSessionCost); err != nil {
+		return nil, fmt.Errorf("error preparing query AddSessionCost: %w", err)
+	}
 	if q.claimCronJobForFiringStmt, err = db.PrepareContext(ctx, claimCronJobForFiring); err != nil {
 		return nil, fmt.Errorf("error preparing query ClaimCronJobForFiring: %w", err)
 	}
@@ -207,6 +210,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.markBridgeSessionMentionConsumedStmt, err = db.PrepareContext(ctx, markBridgeSessionMentionConsumed); err != nil {
 		return nil, fmt.Errorf("error preparing query MarkBridgeSessionMentionConsumed: %w", err)
 	}
+	if q.recordSessionCompactionStmt, err = db.PrepareContext(ctx, recordSessionCompaction); err != nil {
+		return nil, fmt.Errorf("error preparing query RecordSessionCompaction: %w", err)
+	}
+	if q.recordSessionUsageStmt, err = db.PrepareContext(ctx, recordSessionUsage); err != nil {
+		return nil, fmt.Errorf("error preparing query RecordSessionUsage: %w", err)
+	}
 	if q.removeBridgeAllowlistEntryStmt, err = db.PrepareContext(ctx, removeBridgeAllowlistEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query RemoveBridgeAllowlistEntry: %w", err)
 	}
@@ -272,6 +281,11 @@ func (q *Queries) Close() error {
 	if q.addBridgeAllowlistEntryStmt != nil {
 		if cerr := q.addBridgeAllowlistEntryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing addBridgeAllowlistEntryStmt: %w", cerr)
+		}
+	}
+	if q.addSessionCostStmt != nil {
+		if cerr := q.addSessionCostStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing addSessionCostStmt: %w", cerr)
 		}
 	}
 	if q.claimCronJobForFiringStmt != nil {
@@ -574,6 +588,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing markBridgeSessionMentionConsumedStmt: %w", cerr)
 		}
 	}
+	if q.recordSessionCompactionStmt != nil {
+		if cerr := q.recordSessionCompactionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing recordSessionCompactionStmt: %w", cerr)
+		}
+	}
+	if q.recordSessionUsageStmt != nil {
+		if cerr := q.recordSessionUsageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing recordSessionUsageStmt: %w", cerr)
+		}
+	}
 	if q.removeBridgeAllowlistEntryStmt != nil {
 		if cerr := q.removeBridgeAllowlistEntryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing removeBridgeAllowlistEntryStmt: %w", cerr)
@@ -709,6 +733,7 @@ type Queries struct {
 	db                                   DBTX
 	tx                                   *sql.Tx
 	addBridgeAllowlistEntryStmt          *sql.Stmt
+	addSessionCostStmt                   *sql.Stmt
 	claimCronJobForFiringStmt            *sql.Stmt
 	clearStaleFiringStmt                 *sql.Stmt
 	countActiveCronJobsBySessionStmt     *sql.Stmt
@@ -769,6 +794,8 @@ type Queries struct {
 	listSessionsStmt                     *sql.Stmt
 	listVisibleSessionIDsStmt            *sql.Stmt
 	markBridgeSessionMentionConsumedStmt *sql.Stmt
+	recordSessionCompactionStmt          *sql.Stmt
+	recordSessionUsageStmt               *sql.Stmt
 	removeBridgeAllowlistEntryStmt       *sql.Stmt
 	renameSessionStmt                    *sql.Stmt
 	setCronJobFiringStmt                 *sql.Stmt
@@ -795,6 +822,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		db:                                   tx,
 		tx:                                   tx,
 		addBridgeAllowlistEntryStmt:          q.addBridgeAllowlistEntryStmt,
+		addSessionCostStmt:                   q.addSessionCostStmt,
 		claimCronJobForFiringStmt:            q.claimCronJobForFiringStmt,
 		clearStaleFiringStmt:                 q.clearStaleFiringStmt,
 		countActiveCronJobsBySessionStmt:     q.countActiveCronJobsBySessionStmt,
@@ -855,6 +883,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listSessionsStmt:                     q.listSessionsStmt,
 		listVisibleSessionIDsStmt:            q.listVisibleSessionIDsStmt,
 		markBridgeSessionMentionConsumedStmt: q.markBridgeSessionMentionConsumedStmt,
+		recordSessionCompactionStmt:          q.recordSessionCompactionStmt,
+		recordSessionUsageStmt:               q.recordSessionUsageStmt,
 		removeBridgeAllowlistEntryStmt:       q.removeBridgeAllowlistEntryStmt,
 		renameSessionStmt:                    q.renameSessionStmt,
 		setCronJobFiringStmt:                 q.setCronJobFiringStmt,

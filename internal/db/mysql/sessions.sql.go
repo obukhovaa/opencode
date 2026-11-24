@@ -11,6 +11,25 @@ import (
 	"strings"
 )
 
+const addSessionCost = `-- name: AddSessionCost :execrows
+UPDATE sessions
+SET cost = cost + ?
+WHERE id = ?
+`
+
+type AddSessionCostParams struct {
+	Cost float64 `json:"cost"`
+	ID   string  `json:"id"`
+}
+
+func (q *Queries) AddSessionCost(ctx context.Context, arg AddSessionCostParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, addSessionCost, arg.Cost, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const countOldSessionTrees = `-- name: CountOldSessionTrees :one
 SELECT COUNT(*) FROM (
 SELECT CAST(COALESCE(MAX(CASE WHEN s.id = COALESCE(NULLIF(s.root_session_id, ''), s.id) THEN s.id END), MIN(s.id)) AS CHAR) AS session_id,
@@ -501,6 +520,79 @@ func (q *Queries) ListVisibleSessionIDs(ctx context.Context, arg ListVisibleSess
 	return items, nil
 }
 
+const recordSessionCompaction = `-- name: RecordSessionCompaction :execrows
+UPDATE sessions
+SET
+    summary_message_id = ?,
+    prompt_tokens = ?,
+    completion_tokens = ?,
+    total_prompt_tokens = total_prompt_tokens + ?,
+    total_completion_tokens = total_completion_tokens + ?,
+    cost = cost + ?
+WHERE id = ?
+`
+
+type RecordSessionCompactionParams struct {
+	SummaryMessageID    sql.NullString `json:"summary_message_id"`
+	PromptTokens        int64          `json:"prompt_tokens"`
+	CompletionTokens    int64          `json:"completion_tokens"`
+	AddPromptTokens     int64          `json:"add_prompt_tokens"`
+	AddCompletionTokens int64          `json:"add_completion_tokens"`
+	AddCost             float64        `json:"add_cost"`
+	ID                  string         `json:"id"`
+}
+
+func (q *Queries) RecordSessionCompaction(ctx context.Context, arg RecordSessionCompactionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recordSessionCompaction,
+		arg.SummaryMessageID,
+		arg.PromptTokens,
+		arg.CompletionTokens,
+		arg.AddPromptTokens,
+		arg.AddCompletionTokens,
+		arg.AddCost,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recordSessionUsage = `-- name: RecordSessionUsage :execrows
+UPDATE sessions
+SET
+    prompt_tokens = ?,
+    completion_tokens = ?,
+    total_prompt_tokens = total_prompt_tokens + ?,
+    total_completion_tokens = total_completion_tokens + ?,
+    cost = cost + ?
+WHERE id = ?
+`
+
+type RecordSessionUsageParams struct {
+	PromptTokens        int64   `json:"prompt_tokens"`
+	CompletionTokens    int64   `json:"completion_tokens"`
+	AddPromptTokens     int64   `json:"add_prompt_tokens"`
+	AddCompletionTokens int64   `json:"add_completion_tokens"`
+	AddCost             float64 `json:"add_cost"`
+	ID                  string  `json:"id"`
+}
+
+func (q *Queries) RecordSessionUsage(ctx context.Context, arg RecordSessionUsageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recordSessionUsage,
+		arg.PromptTokens,
+		arg.CompletionTokens,
+		arg.AddPromptTokens,
+		arg.AddCompletionTokens,
+		arg.AddCost,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const renameSession = `-- name: RenameSession :execresult
 UPDATE sessions
 SET
@@ -581,8 +673,7 @@ SET
     completion_tokens = ?,
     total_prompt_tokens = ?,
     total_completion_tokens = ?,
-    summary_message_id = ?,
-    cost = ?
+    summary_message_id = ?
 WHERE id = ?
 `
 
@@ -593,7 +684,6 @@ type UpdateSessionParams struct {
 	TotalPromptTokens     int64          `json:"total_prompt_tokens"`
 	TotalCompletionTokens int64          `json:"total_completion_tokens"`
 	SummaryMessageID      sql.NullString `json:"summary_message_id"`
-	Cost                  float64        `json:"cost"`
 	ID                    string         `json:"id"`
 }
 
@@ -605,7 +695,6 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (s
 		arg.TotalPromptTokens,
 		arg.TotalCompletionTokens,
 		arg.SummaryMessageID,
-		arg.Cost,
 		arg.ID,
 	)
 }

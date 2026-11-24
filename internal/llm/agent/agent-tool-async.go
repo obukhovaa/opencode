@@ -101,10 +101,20 @@ func (b *agentTool) runAsync(
 	jobArgs, _ := tools.JobArgsFromContext(ctx)
 	runCtx = tools.WithJobArgs(runCtx, jobArgs)
 	runCtx = inheritStepToolShaping(runCtx, ctx)
+	// The run and its roll-up (in waitAsyncAndNotify) hold the task's
+	// ledger claim; every return before the hand-off releases it.
+	baseline, err := b.beginTaskRun(ctx, taskSession, isResumed)
+	if err != nil {
+		cancel()
+		_ = outputFile.Close()
+		_ = os.Remove(outputPath)
+		return tools.ToolResponse{}, fmt.Errorf("async task: start subagent: %w", err)
+	}
 	// Inherit the caller's NonInteractive marker from the PARENT turn ctx
 	// (runCtx is detached and carries no values) — see subagentRunOptions.
 	done, err := a.RunWith(runCtx, taskSession.ID, prompt, tools.FlowTaskTurns(ctx), subagentRunOptions(ctx))
 	if err != nil {
+		activeTaskRuns.Delete(taskSession.ID)
 		cancel()
 		_ = outputFile.Close()
 		_ = os.Remove(outputPath)
@@ -128,7 +138,13 @@ func (b *agentTool) runAsync(
 		Cancel:                cancel,
 	}
 	if err := reg.Register(tk); err != nil {
+		// The run already started; cancel it and roll up whatever it spent
+		// once it stops, so the claim is released only after its delta.
 		cancel()
+		go func() {
+			defer logging.RecoverPanic("agent.runAsync.unregistered", nil)
+			b.finishAsyncTaskRun(done, sessionID, taskSession.ID, baseline)
+		}()
 		_ = outputFile.Close()
 		_ = os.Remove(outputPath)
 		return tools.ToolResponse{}, fmt.Errorf("async task: register task: %w", err)
@@ -138,7 +154,7 @@ func (b *agentTool) runAsync(
 	handedOff = true
 	go func() {
 		defer release()
-		b.waitAsyncAndNotify(done, outputFile, outputPath, sessionID, call.ID, taskID, taskSession.ID, syntheticInput)
+		b.waitAsyncAndNotify(done, outputFile, outputPath, sessionID, call.ID, taskID, taskSession.ID, syntheticInput, baseline)
 	}()
 
 	agentName := subagentType
@@ -162,18 +178,23 @@ func (b *agentTool) runAsync(
 		}), nil
 }
 
+// Release the run slot before publishing the completion. Its recipient can
+// immediately resume the same task.
+func (b *agentTool) finishAsyncTaskRun(done <-chan AgentEvent, parentID, taskID string, baseline float64) AgentEvent {
+	defer activeTaskRuns.Delete(taskID)
+	result := completedTaskRun(done)
+	b.rollUpSubagentCost(context.Background(), parentID, taskID, baseline)
+	return result
+}
+
 func (b *agentTool) waitAsyncAndNotify(
 	done <-chan AgentEvent,
 	outputFile *os.File,
 	outputPath, sessionID, callID, taskID, taskSessionID, syntheticInput string,
+	baseline float64,
 ) {
 	defer logging.RecoverPanic("agent.runAsync.wait", nil)
-	result := <-done
-
-	// Cost rollup runs FIRST (mirrors the synchronous path's resilience),
-	// so a cancelled or errored subagent still attributes its incurred
-	// spend to the parent.
-	b.rollUpSubagentCost(context.Background(), sessionID, taskSessionID)
+	result := b.finishAsyncTaskRun(done, sessionID, taskSessionID, baseline)
 
 	var content string
 	status := task.StatusCompleted

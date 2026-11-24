@@ -19,6 +19,32 @@ import (
 // only whitespace.
 var ErrEmptyTitle = errors.New("session title cannot be empty")
 
+// ErrCostCommitted is wrapped by AddCost, RecordUsage and RecordCompaction
+// when the write committed but reading the updated row back failed. The
+// increment is stored; the caller must not issue it again.
+var ErrCostCommitted = db.ErrWriteCommitted
+
+// ErrNegativeCost is returned when a cost increment is negative (or NaN).
+var ErrNegativeCost = errors.New("session cost delta must not be negative")
+
+// UsageUpdate is one model call as RecordUsage stores it: the call's own
+// prompt/completion tokens replace the last-call figures, the Add* fields are
+// added to the session totals and the cost.
+type UsageUpdate struct {
+	PromptTokens        int64
+	CompletionTokens    int64
+	AddPromptTokens     int64
+	AddCompletionTokens int64
+	AddCost             float64
+}
+
+// CompactionUpdate is UsageUpdate plus the summary message the compaction
+// created.
+type CompactionUpdate struct {
+	SummaryMessageID string
+	UsageUpdate
+}
+
 type Session struct {
 	// FlowID and DynamicFlow are display annotations populated from flow state.
 	// They are not persisted on the session row.
@@ -60,7 +86,19 @@ type Service interface {
 	CountOldSessions(ctx context.Context, activeSessionID string) (int64, error)
 	VisibleSessionIDs(ctx context.Context, ids []string, currentID string) ([]string, error)
 	ListChildren(ctx context.Context, rootSessionID string) ([]Session, error)
+	// Save writes the session's title, token counts and summary message id.
+	// It never writes Cost: stored cost changes only through AddCost,
+	// RecordUsage and RecordCompaction, so saving a stale copy cannot undo an
+	// increment.
 	Save(ctx context.Context, session Session) (Session, error)
+	// AddCost atomically adds delta (USD, >= 0) to the stored cost and returns
+	// the updated row. A zero delta writes nothing.
+	AddCost(ctx context.Context, id string, delta float64) (Session, error)
+	// RecordUsage stores one model call's tokens and cost in one statement.
+	RecordUsage(ctx context.Context, id string, u UsageUpdate) (Session, error)
+	// RecordCompaction stores a compaction's summary message id, tokens and
+	// cost in one statement.
+	RecordCompaction(ctx context.Context, id string, c CompactionUpdate) (Session, error)
 	// Rename sets the user-facing title and durably marks the session as
 	// user-titled so automatic title generation will not overwrite it.
 	Rename(ctx context.Context, id, title string) (Session, error)
@@ -278,12 +316,77 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 			String: session.SummaryMessageID,
 			Valid:  session.SummaryMessageID != "",
 		},
-		Cost: session.Cost,
 	})
 	if err != nil {
 		return Session{}, err
 	}
 	session = s.fromDBItem(dbSession)
+	s.Publish(pubsub.UpdatedEvent, session)
+	return session, nil
+}
+
+func (s *service) AddCost(ctx context.Context, id string, delta float64) (Session, error) {
+	if !(delta >= 0) {
+		return Session{}, fmt.Errorf("%w: %v", ErrNegativeCost, delta)
+	}
+	if delta == 0 {
+		return s.Get(ctx, id)
+	}
+	return s.costWrite(ctx, func() (db.Session, error) {
+		return s.q.AddSessionCost(ctx, db.AddSessionCostParams{ID: id, Cost: delta})
+	})
+}
+
+func (s *service) RecordUsage(ctx context.Context, id string, u UsageUpdate) (Session, error) {
+	if !(u.AddCost >= 0) {
+		return Session{}, fmt.Errorf("%w: %v", ErrNegativeCost, u.AddCost)
+	}
+	return s.costWrite(ctx, func() (db.Session, error) {
+		return s.q.RecordSessionUsage(ctx, db.RecordSessionUsageParams{
+			ID:                  id,
+			PromptTokens:        u.PromptTokens,
+			CompletionTokens:    u.CompletionTokens,
+			AddPromptTokens:     u.AddPromptTokens,
+			AddCompletionTokens: u.AddCompletionTokens,
+			AddCost:             u.AddCost,
+		})
+	})
+}
+
+func (s *service) RecordCompaction(ctx context.Context, id string, c CompactionUpdate) (Session, error) {
+	if !(c.AddCost >= 0) {
+		return Session{}, fmt.Errorf("%w: %v", ErrNegativeCost, c.AddCost)
+	}
+	return s.costWrite(ctx, func() (db.Session, error) {
+		return s.q.RecordSessionCompaction(ctx, db.RecordSessionCompactionParams{
+			ID:                  id,
+			SummaryMessageID:    sql.NullString{String: c.SummaryMessageID, Valid: c.SummaryMessageID != ""},
+			PromptTokens:        c.PromptTokens,
+			CompletionTokens:    c.CompletionTokens,
+			AddPromptTokens:     c.AddPromptTokens,
+			AddCompletionTokens: c.AddCompletionTokens,
+			AddCost:             c.AddCost,
+		})
+	})
+}
+
+// costWrite runs one cost-bearing write statement under db.WithTxRetry and
+// publishes the row it returns. Retrying is safe only because a retryable
+// error means the statement did not apply. The MySQL read-back after a
+// committed write is not retried: the querier reports its failure wrapped in
+// db.ErrWriteCommitted (== ErrCostCommitted), which IsRetryableTxError does
+// not match, so the loop stops after the one write.
+func (s *service) costWrite(ctx context.Context, write func() (db.Session, error)) (Session, error) {
+	var row db.Session
+	err := db.WithTxRetry(ctx, func() error {
+		var werr error
+		row, werr = write()
+		return werr
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	session := s.fromDBItem(row)
 	s.Publish(pubsub.UpdatedEvent, session)
 	return session, nil
 }

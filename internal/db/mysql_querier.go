@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	mysqldb "github.com/opencode-ai/opencode/internal/db/mysql"
 )
@@ -172,7 +173,6 @@ func (q *MySQLQuerier) UpdateSession(ctx context.Context, arg UpdateSessionParam
 		TotalPromptTokens:     arg.TotalPromptTokens,
 		TotalCompletionTokens: arg.TotalCompletionTokens,
 		SummaryMessageID:      arg.SummaryMessageID,
-		Cost:                  arg.Cost,
 		ID:                    arg.ID,
 	})
 	if err != nil {
@@ -180,6 +180,69 @@ func (q *MySQLQuerier) UpdateSession(ctx context.Context, arg UpdateSessionParam
 	}
 
 	return q.GetSessionByID(ctx, arg.ID)
+}
+
+// AddSessionCost adds arg.Cost to the session's stored cost in one statement
+// and returns the updated row. See readBackAfterWrite for the error contract.
+func (q *MySQLQuerier) AddSessionCost(ctx context.Context, arg AddSessionCostParams) (Session, error) {
+	rows, err := q.queries.AddSessionCost(ctx, mysqldb.AddSessionCostParams{
+		Cost: arg.Cost,
+		ID:   arg.ID,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	return q.readBackAfterWrite(ctx, arg.ID, rows)
+}
+
+// RecordSessionUsage stores one model call's tokens and cost in one statement
+// and returns the updated row. See readBackAfterWrite for the error contract.
+func (q *MySQLQuerier) RecordSessionUsage(ctx context.Context, arg RecordSessionUsageParams) (Session, error) {
+	rows, err := q.queries.RecordSessionUsage(ctx, mysqldb.RecordSessionUsageParams{
+		PromptTokens:        arg.PromptTokens,
+		CompletionTokens:    arg.CompletionTokens,
+		AddPromptTokens:     arg.AddPromptTokens,
+		AddCompletionTokens: arg.AddCompletionTokens,
+		AddCost:             arg.AddCost,
+		ID:                  arg.ID,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	return q.readBackAfterWrite(ctx, arg.ID, rows)
+}
+
+// RecordSessionCompaction stores a compaction's summary id, tokens and cost in
+// one statement and returns the updated row. See readBackAfterWrite for the
+// error contract.
+func (q *MySQLQuerier) RecordSessionCompaction(ctx context.Context, arg RecordSessionCompactionParams) (Session, error) {
+	rows, err := q.queries.RecordSessionCompaction(ctx, mysqldb.RecordSessionCompactionParams{
+		SummaryMessageID:    arg.SummaryMessageID,
+		PromptTokens:        arg.PromptTokens,
+		CompletionTokens:    arg.CompletionTokens,
+		AddPromptTokens:     arg.AddPromptTokens,
+		AddCompletionTokens: arg.AddCompletionTokens,
+		AddCost:             arg.AddCost,
+		ID:                  arg.ID,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	return q.readBackAfterWrite(ctx, arg.ID, rows)
+}
+
+// readBackAfterWrite re-reads a session after an increment statement (MySQL
+// has no RETURNING). Zero affected rows means nothing was written — the id is
+// missing (sql.ErrNoRows) or the update changed no value — so a read error is
+// returned as is. After a write that did apply, a read error is wrapped in
+// ErrWriteCommitted with %v, not %w: the driver error must not reach
+// IsRetryableTxError, or a retry would apply the increment twice.
+func (q *MySQLQuerier) readBackAfterWrite(ctx context.Context, id string, rows int64) (Session, error) {
+	s, err := q.GetSessionByID(ctx, id)
+	if err != nil && rows > 0 {
+		return Session{}, fmt.Errorf("%w: %v", ErrWriteCommitted, err)
+	}
+	return s, err
 }
 
 // RenameSession sets the user-facing title and marks the session user-titled.

@@ -1358,6 +1358,18 @@ func (s *failingSaveSessions) Save(context.Context, session.Session) (session.Se
 	return session.Session{}, errors.New("save failed")
 }
 
+func (s *failingSaveSessions) AddCost(context.Context, string, float64) (session.Session, error) {
+	return session.Session{}, errors.New("save failed")
+}
+
+func (s *failingSaveSessions) RecordUsage(context.Context, string, session.UsageUpdate) (session.Session, error) {
+	return session.Session{}, errors.New("save failed")
+}
+
+func (s *failingSaveSessions) RecordCompaction(context.Context, string, session.CompactionUpdate) (session.Session, error) {
+	return session.Session{}, errors.New("save failed")
+}
+
 // A call whose report was not saved is not marked as the message a report
 // covers: marked, it would anchor the older report and hide what came since.
 func TestProcessEvent_MarksReportedOnlyOnceTheReportIsSaved(t *testing.T) {

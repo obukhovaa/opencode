@@ -128,15 +128,17 @@ func TestSetGeneratedTitleNoOpWhenUserTitled(t *testing.T) {
 	}
 }
 
-// TestSavePreservesUserSetTitle verifies the generic Save path (token/cost
+// TestSavePreservesUserSetTitle verifies the generic Save path (token
 // updates) does not clear the user-titled mark.
 func TestSavePreservesUserSetTitle(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()
 	created, _ := svc.Create(ctx, "New Session")
+	if _, err := svc.AddCost(ctx, created.ID, 1.23); err != nil {
+		t.Fatalf("add cost: %v", err)
+	}
 	renamed, _ := svc.Rename(ctx, created.ID, "User Title")
 
-	renamed.Cost = 1.23
 	renamed.PromptTokens = 100
 	if _, err := svc.Save(ctx, renamed); err != nil {
 		t.Fatalf("save: %v", err)

@@ -46,9 +46,34 @@ SET
     completion_tokens = ?,
     total_prompt_tokens = ?,
     total_completion_tokens = ?,
-    summary_message_id = ?,
-    cost = ?
+    summary_message_id = ?
 WHERE id = ?;
+
+-- name: AddSessionCost :execrows
+UPDATE sessions
+SET cost = cost + ?
+WHERE id = ?;
+
+-- name: RecordSessionUsage :execrows
+UPDATE sessions
+SET
+    prompt_tokens = sqlc.arg(prompt_tokens),
+    completion_tokens = sqlc.arg(completion_tokens),
+    total_prompt_tokens = total_prompt_tokens + sqlc.arg(add_prompt_tokens),
+    total_completion_tokens = total_completion_tokens + sqlc.arg(add_completion_tokens),
+    cost = cost + sqlc.arg(add_cost)
+WHERE id = sqlc.arg(id);
+
+-- name: RecordSessionCompaction :execrows
+UPDATE sessions
+SET
+    summary_message_id = sqlc.narg(summary_message_id),
+    prompt_tokens = sqlc.arg(prompt_tokens),
+    completion_tokens = sqlc.arg(completion_tokens),
+    total_prompt_tokens = total_prompt_tokens + sqlc.arg(add_prompt_tokens),
+    total_completion_tokens = total_completion_tokens + sqlc.arg(add_completion_tokens),
+    cost = cost + sqlc.arg(add_cost)
+WHERE id = sqlc.arg(id);
 
 -- name: RenameSession :execresult
 UPDATE sessions

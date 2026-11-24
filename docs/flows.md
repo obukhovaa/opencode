@@ -640,7 +640,7 @@ Per-step fields (present on `flow.step.*` and `flow.waiting_for_input`):
 
 - `isStructOutput` — `true` when the step produced a JSON `struct_output`, mirrored from `flow.FlowState.IsStructOutput`. Orchestrators can render struct vs free-text blocks differently.
 - `iteration` — 1-based self-loop iteration number, mirrored from `flow.FlowState.Iteration`. `1` for non-looping steps; bumps on every in-process self-route.
-- `cost` — cumulative session cost (USD) at emit time, looked up via `session.Service.Get(state.SessionID).Cost`. Zero on session-lookup failure.
+- `cost` — cumulative session cost (USD) at emit time, looked up via `session.Service.Get(state.SessionID).Cost`. It includes the subagent (`task`) sessions the step started: each task run, resumed ones included, adds only its own spend to the parent once. Adding child session costs on top counts them twice. Zero on session-lookup failure.
 - `contextSize` — cumulative prompt tokens for the session at emit time. Zero on lookup failure.
 - `model` — the model the step's agent runs on: the step's `model` override or pool pick, else the agent's own model. Present on every event once the agent is built; absent for a step that failed before that (an unresolved `agent`, an unknown `model`). `GET /flow/status` step records carry it too.
 - `bestEffort` — `true` on every event of a [`bestEffort`](#step-fields) step, whose `flow.step.failed` does not fail the run. `GET /flow/status` step records carry it too.
@@ -929,14 +929,14 @@ Unknown keys inside `session:` (e.g. a typo `resume_on_fail` missing the trailin
 }
 ```
 
-The `steps` array is in completion order; each entry's `status` is its terminal state (`completed`, `failed`, or `postponed`). `metrics.cost` is the flow-wide total; `metrics.gauge` is wall-clock duration in milliseconds.
+The `steps` array is in completion order; each entry's `status` is its terminal state (`completed`, `failed`, or `postponed`). `metrics.cost` is the flow-wide total: the sum of the step sessions' costs, each of which already includes its subagents (child sessions are not added again); `metrics.gauge` is wall-clock duration in milliseconds.
 
 The envelope contains exactly **one entry per step ID**, even when the step iterated. The latest published state wins:
 
 - `iteration` is the count of how many times the step ran before reaching its terminal state (1-based; `1` for non-looping steps).
 - `status` is the terminal status — `completed` if the loop exited cleanly, `failed` if a `maxIterations` cap (or any other error) tripped, `postponed` if the loop suspended itself.
 - `output` is the structured output (or text) from the **last** iteration.
-- `cost` and `context_size` are session-level totals — because all iterations share one session, these aggregate automatically across the whole loop.
+- `cost` and `context_size` are session-level totals — because all iterations share one session, these aggregate automatically across the whole loop. `cost` includes the step's subagent sessions; do not add child session costs to it.
 - `model` is the model the step ran on (see the `model` event field); an iteration that failed before its agent was built keeps the model an earlier iteration reported.
 
 The intermediate iterations are not surfaced in the JSON envelope. To inspect them, query the session (its messages span all iterations) or Langfuse (one trace per iteration, distinguishable by the `#N` suffix in the trace name).
