@@ -11,6 +11,7 @@ import (
 
 type Querier interface {
 	AddBridgeAllowlistEntry(ctx context.Context, arg AddBridgeAllowlistEntryParams) error
+	AddSessionCost(ctx context.Context, arg AddSessionCostParams) (Session, error)
 	// Atomically marks a cron job as firing only if it is still due. Returns the
 	// number of rows affected; 0 means another worker already claimed it or the
 	// row's next_run_at moved into the future.
@@ -74,6 +75,8 @@ type Querier interface {
 	ListSessions(ctx context.Context, projectID sql.NullString) ([]Session, error)
 	ListVisibleSessionIDs(ctx context.Context, arg ListVisibleSessionIDsParams) ([]string, error)
 	MarkBridgeSessionMentionConsumed(ctx context.Context, arg MarkBridgeSessionMentionConsumedParams) error
+	RecordSessionCompaction(ctx context.Context, arg RecordSessionCompactionParams) (Session, error)
+	RecordSessionUsage(ctx context.Context, arg RecordSessionUsageParams) (Session, error)
 	RemoveBridgeAllowlistEntry(ctx context.Context, arg RemoveBridgeAllowlistEntryParams) error
 	RenameSession(ctx context.Context, arg RenameSessionParams) (Session, error)
 	SetCronJobFiring(ctx context.Context, arg SetCronJobFiringParams) error

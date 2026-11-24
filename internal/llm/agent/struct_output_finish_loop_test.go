@@ -140,6 +140,45 @@ func (s *memSessions) Save(_ context.Context, sess session.Session) (session.Ses
 	return sess, nil
 }
 
+// update applies fn to the stored row under the lock, as the single-statement
+// cost writers do: no stale copy can overwrite another writer's increment.
+func (s *memSessions) update(id string, fn func(*session.Session)) (session.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions == nil {
+		s.sessions = map[string]session.Session{}
+	}
+	sess, ok := s.sessions[id]
+	if !ok {
+		sess = session.Session{ID: id}
+	}
+	fn(&sess)
+	s.sessions[id] = sess
+	return sess, nil
+}
+
+func (s *memSessions) AddCost(_ context.Context, id string, delta float64) (session.Session, error) {
+	return s.update(id, func(sess *session.Session) { sess.Cost += delta })
+}
+
+func applyUsage(sess *session.Session, u session.UsageUpdate) {
+	sess.PromptTokens, sess.CompletionTokens = u.PromptTokens, u.CompletionTokens
+	sess.TotalPromptTokens += u.AddPromptTokens
+	sess.TotalCompletionTokens += u.AddCompletionTokens
+	sess.Cost += u.AddCost
+}
+
+func (s *memSessions) RecordUsage(_ context.Context, id string, u session.UsageUpdate) (session.Session, error) {
+	return s.update(id, func(sess *session.Session) { applyUsage(sess, u) })
+}
+
+func (s *memSessions) RecordCompaction(_ context.Context, id string, c session.CompactionUpdate) (session.Session, error) {
+	return s.update(id, func(sess *session.Session) {
+		applyUsage(sess, c.UsageUpdate)
+		sess.SummaryMessageID = c.SummaryMessageID
+	})
+}
+
 // scriptedProvider returns one EventComplete per StreamResponse call, with
 // the response chosen by call number. onCall fires before the events are
 // emitted — tests use it to flip external state (e.g. finish a background

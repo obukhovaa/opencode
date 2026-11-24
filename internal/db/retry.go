@@ -29,6 +29,11 @@ const (
 	txRetryMaxDelay    = 100 * time.Millisecond
 )
 
+// ErrWriteCommitted marks an error from a write-then-read querier method whose
+// write statement committed but whose read-back failed. It is not retryable:
+// re-issuing the write would apply an increment twice.
+var ErrWriteCommitted = errors.New("write committed, read-back failed")
+
 // IsRetryableTxError reports whether err is a transient transaction conflict
 // worth retrying: a MySQL deadlock (1213) or lock-wait timeout (1205), or a
 // SQLite busy/locked transaction (including an invalidated WAL snapshot). It

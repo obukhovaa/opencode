@@ -59,6 +59,27 @@ func (s *stubSessions) ListChildren(context.Context, string) ([]session.Session,
 func (s *stubSessions) Save(_ context.Context, sess session.Session) (session.Session, error) {
 	return sess, nil
 }
+func (s *stubSessions) AddCost(_ context.Context, id string, delta float64) (session.Session, error) {
+	sess := s.byID[id]
+	sess.Cost += delta
+	s.byID[id] = sess
+	return sess, nil
+}
+func (s *stubSessions) RecordUsage(_ context.Context, id string, u session.UsageUpdate) (session.Session, error) {
+	sess := s.byID[id]
+	sess.PromptTokens, sess.CompletionTokens = u.PromptTokens, u.CompletionTokens
+	sess.TotalPromptTokens += u.AddPromptTokens
+	sess.TotalCompletionTokens += u.AddCompletionTokens
+	sess.Cost += u.AddCost
+	s.byID[id] = sess
+	return sess, nil
+}
+func (s *stubSessions) RecordCompaction(ctx context.Context, id string, c session.CompactionUpdate) (session.Session, error) {
+	sess, _ := s.RecordUsage(ctx, id, c.UsageUpdate)
+	sess.SummaryMessageID = c.SummaryMessageID
+	s.byID[id] = sess
+	return sess, nil
+}
 func (s *stubSessions) Rename(_ context.Context, id, title string) (session.Session, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {

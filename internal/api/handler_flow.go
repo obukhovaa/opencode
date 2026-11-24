@@ -103,8 +103,11 @@ type FlowEvent struct {
 	// of in-step retries.
 	Iteration int `json:"iteration,omitempty"`
 	// Cost is the running cumulative session cost (USD) at event-emit time.
-	// Looked up via session.Service.Get(state.SessionID).Cost. Zero when
-	// the session lookup fails (missing or service unavailable).
+	// Looked up via session.Service.Get(state.SessionID).Cost. It includes
+	// the subagent (task) sessions the step started: each task run rolls its
+	// own spend into the parent, so adding child session costs to it counts
+	// them twice. Zero when the session lookup fails (missing or service
+	// unavailable).
 	Cost float64 `json:"cost,omitempty"`
 	// ContextSize is the size of the LLM context window in use at emit
 	// time — i.e., the last turn's input + cache-creation tokens plus

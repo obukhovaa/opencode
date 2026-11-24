@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -216,6 +217,12 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	}
 	defer release()
 
+	baseline, err := b.beginTaskRun(ctx, taskSession, isResumed)
+	if err != nil {
+		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %w", err)
+	}
+	defer activeTaskRuns.Delete(taskSession.ID)
+
 	// The subagent inherits the caller's NonInteractive marker (GENAI-140).
 	// Under a flow step that means the subagent drains its own background
 	// tasks before it answers and has its foreground sleeps redirected,
@@ -226,20 +233,13 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", err)
 	}
-	result := <-done
+	result := completedTaskRun(done)
 
-	// Attribute the subagent's cost to the parent session BEFORE any
-	// error/early-return branches. The subagent's TrackUsage persists
-	// sess.Cost after every model call (agent.go:1241-1268), so the
-	// taskSession row already holds the correct cumulative cost even
-	// if the run errored, was canceled, or panicked. Previously this
-	// rollup only ran on the success path — canceled/hung subagents
-	// (e.g. an MCP tool that wedges) silently dropped their incurred
-	// cost from the parent's accounting, understating the
-	// conversation's true spend. The rollup is a side-effect; if
-	// either Get or Save fails we log and continue so the caller
+	// Attribute this run's spend to the parent BEFORE any error/early-return
+	// branch, so a failed, cancelled or hung run still hands over what it
+	// cost. The roll-up is a side effect: on failure it logs and the caller
 	// still sees the real subagent result.
-	b.rollUpSubagentCost(ctx, sessionID, taskSession.ID)
+	b.rollUpSubagentCost(ctx, sessionID, taskSession.ID, baseline)
 
 	if result.Error != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", result.Error)
@@ -268,22 +268,32 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		}), nil
 }
 
-// rollUpSubagentCost moves the subagent's accumulated cost into the parent
-// session. Extracted so the async path's goroutine can call it from
-// background context without duplicating the resilient-error logging.
-func (b *agentTool) rollUpSubagentCost(ctx context.Context, parentSessionID, taskSessionID string) {
-	if updated, err := b.sessions.Get(ctx, taskSessionID); err != nil {
+// costRollUpTimeout bounds the roll-up's own database work. Its ctx is
+// detached from the caller's cancellation (a cancelled run must still hand
+// over its spend) but must not hang a finished task on a stuck database.
+const costRollUpTimeout = 30 * time.Second
+
+// rollUpSubagentCost adds the spend since this run started to its caller.
+func (b *agentTool) rollUpSubagentCost(ctx context.Context, parentSessionID, taskSessionID string, baseline float64) {
+	accCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), costRollUpTimeout)
+	defer cancel()
+
+	child, err := b.sessions.Get(accCtx, taskSessionID)
+	if err != nil {
 		logging.Warn("task tool: cost rollup get subagent failed",
 			"task_session", taskSessionID, "err", err)
-	} else if parent, err := b.sessions.Get(ctx, parentSessionID); err != nil {
-		logging.Warn("task tool: cost rollup get parent failed",
-			"parent_session", parentSessionID, "err", err)
-	} else {
-		parent.Cost += updated.Cost
-		if _, err := b.sessions.Save(ctx, parent); err != nil {
-			logging.Warn("task tool: cost rollup save parent failed",
-				"parent_session", parentSessionID, "err", err)
+		return
+	}
+	delta := child.Cost - baseline
+	switch {
+	case delta > 0:
+		if _, err := b.sessions.AddCost(accCtx, parentSessionID, delta); err != nil {
+			logging.Warn("task tool: cost rollup add to parent failed",
+				"parent_session", parentSessionID, "task_session", taskSessionID, "delta", delta, "err", err)
 		}
+	case delta < 0:
+		logging.Warn("task tool: subagent cost below its run baseline; nothing rolled up",
+			"task_session", taskSessionID, "baseline", baseline, "cost", child.Cost)
 	}
 }
 

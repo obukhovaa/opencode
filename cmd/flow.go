@@ -244,6 +244,10 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		if listErr != nil {
 			logging.Warn("Failed to list child sessions for metrics", "root_session_id", rootSessionID, "error", listErr)
 		} else {
+			// Only step sessions are summed. A step session's cost already
+			// includes the subagent sessions below it (task runs roll their
+			// spend into the parent), so adding those child rows too would
+			// count them twice.
 			for _, sess := range children {
 				if step, ok := stepsBySessionID[sess.ID]; !ok {
 					continue

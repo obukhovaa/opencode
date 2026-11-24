@@ -2914,20 +2914,20 @@ func (a *agent) activateDiscoveredTools(sessionID string, searches []message.Too
 }
 
 func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.Model, usage provider.TokenUsage) error {
-	sess, err := a.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-
 	inputCost, outputCost := provider.CalculateCost(model, usage)
 	cost := inputCost + outputCost
 
-	sess.Cost += cost
 	last := lastCallUsage(sessionID, model, usage)
-	sess.CompletionTokens = last.OutputTokens
-	sess.PromptTokens = last.InputTokens + last.CacheCreationTokens + last.CacheReadTokens
-	sess.TotalCompletionTokens += usage.OutputTokens
-	sess.TotalPromptTokens += usage.InputTokens + usage.CacheCreationTokens + usage.CacheReadTokens
+	sess, err := a.sessions.RecordUsage(ctx, sessionID, session.UsageUpdate{
+		PromptTokens:        last.InputTokens + last.CacheCreationTokens + last.CacheReadTokens,
+		CompletionTokens:    last.OutputTokens,
+		AddPromptTokens:     usage.InputTokens + usage.CacheCreationTokens + usage.CacheReadTokens,
+		AddCompletionTokens: usage.OutputTokens,
+		AddCost:             cost,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to record session usage: %w", err)
+	}
 
 	logging.Info("Track usage",
 		"session_id", sessionID,
@@ -2939,12 +2939,8 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 		"cache_read", usage.CacheReadTokens,
 		"summed_passes", usage.LastPass != nil,
 		"cost", cost,
+		"session_cost", sess.Cost,
 	)
-
-	_, err = a.sessions.Save(ctx, sess)
-	if err != nil {
-		return fmt.Errorf("failed to save session: %w", err)
-	}
 	return nil
 }
 
@@ -3211,15 +3207,8 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 		return stats, fmt.Errorf("failed to create summary message: %w", err)
 	}
 
-	oldSession.SummaryMessageID = msg.ID
-	oldSession.CompletionTokens = response.Usage.OutputTokens
-	oldSession.PromptTokens = 0
-	oldSession.TotalCompletionTokens += response.Usage.OutputTokens
-	oldSession.TotalPromptTokens += response.Usage.InputTokens + response.Usage.CacheCreationTokens + response.Usage.CacheReadTokens
 	inCost, outCost := provider.CalculateCost(a.summarizeProvider.Model(), response.Usage)
-	oldSession.Cost += inCost + outCost
-
-	_, err = a.sessions.Save(summarizeCtx, oldSession)
+	_, err = a.sessions.RecordCompaction(summarizeCtx, sessionID, compactionUpdate(msg.ID, response.Usage, inCost+outCost))
 	if err != nil {
 		return stats, fmt.Errorf("failed to save session: %w", err)
 	}
@@ -3227,6 +3216,23 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 
 	logging.Info("Synchronous compaction completed successfully", "session_id", sessionID, "trigger", trigger)
 	return stats, nil
+}
+
+// compactionUpdate is what a finished compaction stores, in one statement:
+// the summary message, the summarizer's output as the last-call completion
+// (the prompt restarts at 0 from the summary), its tokens added to the totals
+// and its cost added to the session cost.
+func compactionUpdate(summaryMessageID string, usage provider.TokenUsage, cost float64) session.CompactionUpdate {
+	return session.CompactionUpdate{
+		SummaryMessageID: summaryMessageID,
+		UsageUpdate: session.UsageUpdate{
+			PromptTokens:        0,
+			CompletionTokens:    usage.OutputTokens,
+			AddPromptTokens:     usage.InputTokens + usage.CacheCreationTokens + usage.CacheReadTokens,
+			AddCompletionTokens: usage.OutputTokens,
+			AddCost:             cost,
+		},
+	}
 }
 
 func (a *agent) Summarize(ctx context.Context, sessionID string) error {
@@ -3376,14 +3382,8 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 			a.Publish(pubsub.CreatedEvent, event)
 			return
 		}
-		oldSession.SummaryMessageID = msg.ID
-		oldSession.CompletionTokens = response.Usage.OutputTokens
-		oldSession.PromptTokens = 0
-		oldSession.TotalCompletionTokens += response.Usage.OutputTokens
-		oldSession.TotalPromptTokens += response.Usage.InputTokens + response.Usage.CacheCreationTokens + response.Usage.CacheReadTokens
 		inCost, outCost := provider.CalculateCost(a.summarizeProvider.Model(), response.Usage)
-		oldSession.Cost += inCost + outCost
-		_, err = a.sessions.Save(summarizeCtx, oldSession)
+		_, err = a.sessions.RecordCompaction(summarizeCtx, oldSession.ID, compactionUpdate(msg.ID, response.Usage, inCost+outCost))
 		if err != nil {
 			event = AgentEvent{
 				Type:  AgentEventTypeError,
