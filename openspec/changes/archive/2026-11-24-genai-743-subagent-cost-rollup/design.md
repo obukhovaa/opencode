@@ -8,6 +8,10 @@ OpenCode sends a terminal event before finishing post-turn compaction. The task 
 
 The slot coordinates calls within one process. Each run accounts for usage recorded during its lifetime. Flow tasks drain their own background work before answering. A task process that exits before recording completion has the same recovery limitation as other unpersisted completion side effects.
 
+## Accounting boundary
+
+Flow tasks drain their descendants before completing, and the task tool waits for post-turn compaction. An interactive task can leave a detached descendant running after its own invocation completes. The descendant credits its direct parent on completion. That later charge can fall outside the snapshot already credited to a higher ancestor. We accept this limitation for detached interactive work in this patch. Recovering late charges after restart would require persisting which spend has been forwarded to each ancestor.
+
 ## Storage
 
 Each cost writer uses an atomic increment on the session row. Model calls update last-call tokens, cumulative tokens and cost in one statement. Compaction also stores its summary message ID in that statement. General session saves omit the cost column, which prevents callers holding an older copy of the session from overwriting later charges.
